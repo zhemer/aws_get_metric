@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-type aaStrToFloat map[string][]float64
 type aaStrToInt map[string][]int64
 
 const iDataPointLimit = 1440 // number of datapoint (or hours) with 3600 period that equals 60 days
@@ -24,8 +23,8 @@ var (
 	sDateSt = flag.String(aParams[1], "", "Start date for gathered data ")
 	sDateEn = flag.String(aParams[2], "", "End date for gathered data")
 )
-var sHelp = `Examples
-  %s -vol vol-01234567890123456 -dates 2020-03-01 -datee 2020-03-04`
+var sHelp = `Example
+  %s -vol vol-01234567890123456 -dates 2020-01-01 -datee 2020-03-04`
 
 var aStrTable = []string{
 	"%s gathers disk metrics of AWS EBS volume. 'aws' command line tool must be setted up before. Dates must be specified in format YYYY-MM-DD.\n",
@@ -92,7 +91,7 @@ func main() {
 		t1 = strings.ReplaceAll(t1, "T", " ")
 		f.WriteString(fmt.Sprintf("%s,%d,%d\n", t1, aVolRWBytes[t][0], aVolRWBytes[t][1]))
 	}
-	fmt.Printf("Writed file %q\n", sName)
+	fmt.Printf("VolumeWriteBytes/VolumeReadBytes data were saved to file %q\n", sName)
 
 	sName = *sVol + "-VolumeOps.csv"
 	f, _ = os.Create(sName)
@@ -104,7 +103,7 @@ func main() {
 		// fmt.Printf("%s,%f,%f\n", t1, aVolRWOps[t][0], aVolRWOps[t][1])
 		f.WriteString(fmt.Sprintf("%s,%d,%d\n", t1, aVolRWOps[t][0], aVolRWOps[t][1]))
 	}
-	fmt.Printf("Writed file %q\n", sName)
+	fmt.Printf("VolumeWriteOps/VolumeReadOps data were saved to file %q\n", sName)
 }
 
 func out_to_array(out []string, arr aaStrToInt) {
