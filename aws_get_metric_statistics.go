@@ -54,7 +54,7 @@ func main() {
 	timeSt, _ := time.Parse(time.RFC3339, *sDateSt+sTimeRfc3339)
 	timeEn, _ := time.Parse(time.RFC3339, *sDateEn+sTimeRfc3339)
 	tDiffHours := timeEn.Sub(timeSt).Hours()
-	fmt.Printf("ds=%q de=%q diff=%q\n", timeSt, timeEn, tDiffHours)
+	// fmt.Printf("ds=%q de=%q diff=%q\n", timeSt, timeEn, tDiffHours)
 
 	aaDateToVal := make(map[string][]string)
 
@@ -114,15 +114,6 @@ func main() {
 	}
 
 }
-
-// func out_to_array(out []string, arr aaStrToInt) {
-// 	for l := range out {
-// 		line := out[l]
-// 		vals := strings.Split(line, "\t")
-// 		fVal, _ := strconv.ParseFloat(vals[1], 64)
-// 		arr[vals[2]] = append(arr[vals[2]], int64(fVal))
-// 	}
-// }
 
 func aws_out_to_array(out []string, arr map[string][]string) {
 	for l := range out {
