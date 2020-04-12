@@ -7,13 +7,15 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	// "strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const sVersion = "0.0.1"
+type tmStrToStr map[string][]string
+
+const sVersion = "0.1.0"
 const iDataPointLimit = 1440 // number of datapoint (or hours) with 3600 period that equals 60 days
 const sTimeRfc3339 = "T00:00:00Z"
 
@@ -25,6 +27,7 @@ var (
 	sMetric    = flag.String(aParams[3], "", "Metric's name")
 	sOutFile   = flag.String("out-file", "", "Write data to file, value 'default' generates default file name")
 	sNamespace = flag.String("namespace", "EC2", "Metric's namespace")
+	iDbg       = flag.Bool("debug", false, "Enable debbuging")
 )
 var sHelp = `Example
   %s -name InstanceId,Value=i-012345 -start-time 2019-11-29 -end-time 2020-03-04 -metric-name NetworkOut`
@@ -51,18 +54,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	aaDateToVal := make(tmStrToStr)
 	timeSt, _ := time.Parse(time.RFC3339, *sDateSt+sTimeRfc3339)
 	timeEn, _ := time.Parse(time.RFC3339, *sDateEn+sTimeRfc3339)
 	tDiffHours := timeEn.Sub(timeSt).Hours()
-	// fmt.Printf("ds=%q de=%q diff=%q\n", timeSt, timeEn, tDiffHours)
-
-	aaDateToVal := make(map[string][]string)
+	if *iDbg {
+		fmt.Printf("ds=%q de=%q diff=%q\n", timeSt, timeEn, tDiffHours)
+	}
 
 	iCnt := int(tDiffHours) / iDataPointLimit
 	if int(tDiffHours)%iDataPointLimit > 0 {
 		iCnt++
 	}
-	// fmt.Printf("iCnt=%q tDiffHours=%q iDataPointLimit=%q\n", iCnt, tDiffHours, iDataPointLimit)
+
+	chan0 := make(chan tmStrToStr, iCnt)
+	defer func() {
+		close(chan0)
+	}()
+
+	if *iDbg {
+		fmt.Printf("iCnt=%q tDiffHours=%q iDataPointLimit=%q\n", iCnt, tDiffHours, iDataPointLimit)
+	}
 	t0 := timeSt
 	t1 := timeSt.AddDate(0, 0, 60)
 	for i := 0; i < iCnt; i++ {
@@ -72,14 +84,37 @@ func main() {
 				t0 = t0.AddDate(0, 0, -1)
 			}
 		}
-		fmt.Printf("t0=%s t1=%s\n", t0.String()[:10], t1.String()[:10])
+		if *iDbg {
+			fmt.Printf("t0=%s t1=%s\n", t0.String()[:10], t1.String()[:10])
+		}
 
-		lines := aws_get_metric_statistics(*sName, t0.String()[:10], t1.String()[:10], *sMetric, *sNamespace)
-		// fmt.Printf("lines=%v\n", lines)
-		aws_out_to_array(lines, aaDateToVal)
-
+		go func(t0 string, t1 string, i int) {
+			lines := awsGetMetricStatistics(*sName, t0, t1, *sMetric, *sNamespace)
+			if *iDbg {
+				// fmt.Printf("lines=%v ...\n", lines[0:2])
+				fmt.Printf("started %d\n", i)
+			}
+			chan0 <- tmStrToStr{strconv.Itoa(i): lines}
+		}(t0.String()[:10], t1.String()[:10], i)
 		t0 = t1.AddDate(0, 0, 1)
 		t1 = t0.AddDate(0, 0, 60)
+	}
+
+	doneCount := 0
+	for doneCount != iCnt {
+		select {
+		case chunk := <-chan0:
+			for i := range chunk {
+				awsOutToArray(chunk[i], aaDateToVal)
+				doneCount++
+				if *iDbg {
+					fmt.Printf("ended %s\n", i)
+				}
+
+			}
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	sFilename := ""
@@ -89,13 +124,13 @@ func main() {
 		if *sOutFile == aParams[4] {
 			sFilename = *sNamespace + "-" + *sMetric + "-" + *sName
 		}
-		sFilename = sFilename + ".csv"
+		// sFilename = sFilename + ".csv"
 		f, _ = os.Create(sFilename)
 		defer f.Close()
 	}
 	f.WriteString(fmt.Sprintf("date,%s\n", *sMetric))
 	// fmt.Printf("aaDateToVal=%v\n", aaDateToVal)
-	// Soerting keys(dates) of the aaDateToVal
+	// Sorting keys(dates) of the aaDateToVal
 	keys := make([]string, 0, len(aaDateToVal))
 	for k := range aaDateToVal {
 		keys = append(keys, k)
@@ -115,7 +150,7 @@ func main() {
 
 }
 
-func aws_out_to_array(out []string, arr map[string][]string) {
+func awsOutToArray(out []string, arr tmStrToStr) {
 	for l := range out {
 		line := out[l]
 		// fmt.Printf("%d %s\n", l, line)
@@ -128,11 +163,14 @@ func aws_out_to_array(out []string, arr map[string][]string) {
 	}
 }
 
-func aws_get_metric_statistics(sName, sDateSt, sDateEn, sMetric string, sNamespace string) []string {
+func awsGetMetricStatistics(sName, sDateSt, sDateEn, sMetric string, sNamespace string) []string {
 	var sCmdAws = "aws"
 	var sCmd = "cloudwatch get-metric-statistics --period 3600 --statistics Maximum --dimensions Name=%s --start-time %s --end-time %s --output text --metric-name %s --namespace AWS/%s"
 	sCmd1 := fmt.Sprintf(sCmd, sName, sDateSt, sDateEn, sMetric, sNamespace)
-	fmt.Printf("Running command: '%s %s'\n", sCmdAws, sCmd1)
+	if *iDbg {
+		fmt.Printf("Running command: '%s %s'\n", sCmdAws, sCmd1)
+	}
+	// return nil
 	cmd := exec.Command(sCmdAws, strings.Split(sCmd1, " ")...)
 	var outErr bytes.Buffer
 	cmd.Stderr = &outErr
@@ -143,4 +181,5 @@ func aws_get_metric_statistics(sName, sDateSt, sDateEn, sMetric string, sNamespa
 	}
 
 	return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")[1:]
+	// return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")[1:5]
 }
