@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"log"
 	"os"
 	"os/exec"
@@ -15,7 +17,7 @@ import (
 
 type tmStrToStr map[string][]string
 
-const sVersion = "0.1.0"
+const sVersion = "0.2.0"
 const iDataPointLimit = 1440 // number of datapoint (or hours) with 3600 period that equals 60 days
 const sTimeRfc3339 = "T00:00:00Z"
 
@@ -28,6 +30,7 @@ var (
 	sOutFile   = flag.String("out-file", "", "Write data to file, value 'default' generates default file name")
 	sNamespace = flag.String("namespace", "EC2", "Metric's namespace")
 	iDbg       = flag.Bool("debug", false, "Enable debbuging")
+	iCli       = flag.Bool("cli", false, "Use command line utility 'aws' instead of native SDK to interface with AWS")
 )
 var sHelp = `Example
   %s -name InstanceId,Value=i-012345 -start-time 2019-11-29 -end-time 2020-03-04 -metric-name NetworkOut`
@@ -51,7 +54,7 @@ func main() {
 	if *sName == "" || *sDateSt == "" || *sDateEn == "" || *sMetric == "" {
 		fmt.Printf(aStrTable[1], aParams)
 		flag.Usage()
-		os.Exit(1)
+		os.Exit(0)
 	}
 
 	aaDateToVal := make(tmStrToStr)
@@ -60,6 +63,10 @@ func main() {
 	tDiffHours := timeEn.Sub(timeSt).Hours()
 	if *iDbg {
 		fmt.Printf("ds=%q de=%q diff=%q\n", timeSt, timeEn, tDiffHours)
+	}
+	if !*iCli {
+		awsGetMetricsData(*sName, *sMetric, *sNamespace, timeSt, timeEn)
+		os.Exit(0)
 	}
 
 	iCnt := int(tDiffHours) / iDataPointLimit
@@ -89,7 +96,7 @@ func main() {
 		}
 
 		go func(t0 string, t1 string, i int) {
-			lines := awsGetMetricStatistics(*sName, t0, t1, *sMetric, *sNamespace)
+			lines := awsGetMetricStatistics0(*sName, t0, t1, *sMetric, *sNamespace)
 			if *iDbg {
 				// fmt.Printf("lines=%v ...\n", lines[0:2])
 				fmt.Printf("started %d\n", i)
@@ -130,6 +137,7 @@ func main() {
 	}
 	f.WriteString(fmt.Sprintf("date,%s\n", *sMetric))
 	// fmt.Printf("aaDateToVal=%v\n", aaDateToVal)
+
 	// Sorting keys(dates) of the aaDateToVal
 	keys := make([]string, 0, len(aaDateToVal))
 	for k := range aaDateToVal {
@@ -137,17 +145,11 @@ func main() {
 	}
 	sort.Strings(keys)
 	for _, keyTime := range keys {
-		t1 := keyTime[:len(keyTime)-1]
-		t1 = strings.ReplaceAll(t1, "T", " ")
-		// if len(aaDateToVal[t]) == 1 {
-		// 	aaDateToVal[t] = append(aaDateToVal[t], "-1")
-		// }
-		f.WriteString(fmt.Sprintf("%s,%s\n", t1, aaDateToVal[keyTime][0]))
+		f.WriteString(fmt.Sprintf("%s,%s\n", keyTime, aaDateToVal[keyTime][0]))
 	}
 	if *sOutFile != "" {
 		fmt.Printf("Metric '%s/%s' data with name %q were saved to the file %q\n", *sNamespace, *sMetric, *sName, sFilename)
 	}
-
 }
 
 func awsOutToArray(out []string, arr tmStrToStr) {
@@ -163,6 +165,26 @@ func awsOutToArray(out []string, arr tmStrToStr) {
 	}
 }
 
+func getCPUmodel() string {
+	cmd := "cat /proc/cpuinfo | egrep '^model name' | uniq | awk '{print substr($0, index($0,$4))}'"
+	out, err := exec.Command("bash", "-c", cmd).Output()
+	if err != nil {
+		return fmt.Sprintf("Failed to execute command: %s", cmd)
+	}
+	return string(out)
+}
+func awsGetMetricStatistics0(sName, sDateSt, sDateEn, sMetric string, sNamespace string) []string {
+	sCmd := "aws cloudwatch get-metric-statistics --period 3600 --statistics Maximum --dimensions Name=%s --start-time %s --end-time %s --output text --metric-name %s --namespace AWS/%s|sed 's/T/ /g'|sed 's/Z//'"
+	sCmd1 := fmt.Sprintf(sCmd, sName, sDateSt, sDateEn, sMetric, sNamespace)
+	if *iDbg {
+		fmt.Printf("Running command: %q\n", sCmd1)
+	}
+	out, err := exec.Command("bash", "-c", sCmd1).Output()
+	if err != nil {
+		log.Fatalf("exec.Command() failed with: %q\n", err)
+	}
+	return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")[1:]
+}
 func awsGetMetricStatistics(sName, sDateSt, sDateEn, sMetric string, sNamespace string) []string {
 	var sCmdAws = "aws"
 	var sCmd = "cloudwatch get-metric-statistics --period 3600 --statistics Maximum --dimensions Name=%s --start-time %s --end-time %s --output text --metric-name %s --namespace AWS/%s"
@@ -170,16 +192,76 @@ func awsGetMetricStatistics(sName, sDateSt, sDateEn, sMetric string, sNamespace 
 	if *iDbg {
 		fmt.Printf("Running command: '%s %s'\n", sCmdAws, sCmd1)
 	}
-	// return nil
 	cmd := exec.Command(sCmdAws, strings.Split(sCmd1, " ")...)
 	var outErr bytes.Buffer
 	cmd.Stderr = &outErr
-	// out, err := cmd.CombinedOutput()
 	out, err := cmd.Output()
 	if err != nil {
 		log.Fatalf("cmd.Run() failed with: %s: %s\n", err, outErr.String())
 	}
 
 	return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")[1:]
-	// return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")[1:5]
+}
+
+func awsGetMetricsData(sName, sMetric, sNamespace string, startTime, endTime time.Time) {
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+
+	svc := cloudwatch.New(sess)
+
+	// fmt.Printf("%v %v\n", startTime, endTime)
+	namespace := "AWS/" + sNamespace
+	metricname := sMetric
+	metricid := "m1"
+	asNameVal := strings.Split(strings.ReplaceAll(sName, "=", ","), ",")
+	// fmt.Printf("\nasNameVal=%v\n", asNameVal)
+	metricDim1Name := asNameVal[0]
+	metricDim1Value := asNameVal[2]
+	// metricDim2Name := "DomainName"
+	// metricDim2Value := "yourdomainhere"
+	period := int64(3600)
+	stat := "Maximum"
+	query := &cloudwatch.MetricDataQuery{
+		Id: &metricid,
+		MetricStat: &cloudwatch.MetricStat{
+			Metric: &cloudwatch.Metric{
+				Namespace:  &namespace,
+				MetricName: &metricname,
+				Dimensions: []*cloudwatch.Dimension{
+					{
+						Name:  &metricDim1Name,
+						Value: &metricDim1Value,
+					},
+					// {
+					// 	Name:  &metricDim2Name,
+					// 	Value: &metricDim2Value,
+					// },
+				},
+			},
+			Period: &period,
+			Stat:   &stat,
+		},
+	}
+
+	resp, err := svc.GetMetricData(&cloudwatch.GetMetricDataInput{
+		EndTime:           &endTime,
+		StartTime:         &startTime,
+		MetricDataQueries: []*cloudwatch.MetricDataQuery{query},
+	})
+
+	if err != nil {
+		fmt.Println("Got error getting metric data")
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+
+	fmt.Printf("date,%s\n", sMetric)
+	for _, metricdata := range resp.MetricDataResults {
+		// fmt.Println(*metricdata.Id)
+		for index := range metricdata.Timestamps {
+			// fmt.Printf("%v,%v\n", (*metricdata.Timestamps[index]).String(), *metricdata.Values[index])
+			fmt.Printf("%v,%v\n", (*metricdata.Timestamps[index]).Format("2006-01-02 15:04:05"), *metricdata.Values[index])
+		}
+	}
 }
